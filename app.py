@@ -4,11 +4,14 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import urllib.request
+import webbrowser
 from pathlib import Path
 
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 
 
@@ -82,7 +85,6 @@ def download_model(progress, status):
             done.add(index)
             progress(len(done) / chunks)
 
-    # Keep concurrency moderate to avoid overloading connections or memory.
     from concurrent.futures import ThreadPoolExecutor, as_completed
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = [pool.submit(fetch, i) for i in range(chunks)]
@@ -119,6 +121,7 @@ class HyperCoder(ctk.CTk):
         self.model = None
         self.messages = []
         self.busy = False
+        self._link_counter = 0
         self._build_ui()
         self.after(100, self._poll_events)
 
@@ -158,10 +161,34 @@ class HyperCoder(ctk.CTk):
         header.grid(row=0, column=0, sticky="ew", padx=30, pady=(24, 8))
         ctk.CTkLabel(header, text="Your private AI workspace", font=ctk.CTkFont(size=22, weight="bold"), text_color="#e7effa").pack(anchor="w")
         ctk.CTkLabel(header, text="Gemma 4 E2B · quantized for local inference", font=ctk.CTkFont(size=12), text_color="#8494aa").pack(anchor="w", pady=(3, 0))
-        self.chat = ctk.CTkTextbox(main, corner_radius=16, border_width=1, border_color="#1d2a3a", fg_color="#0e1520", text_color="#d9e3ef", font=ctk.CTkFont(size=14), wrap="word")
-        self.chat.grid(row=1, column=0, sticky="nsew", padx=26, pady=14)
-        self.chat.insert("end", "HYPER CODER\nYour local model studio is ready. Download the model or load a GGUF file, then start a conversation.\n\nTip: you can press Ctrl+Enter to send.\n")
-        self.chat.configure(state="disabled")
+
+        chat_shell = ctk.CTkFrame(main, corner_radius=16, border_width=1, border_color="#1d2a3a", fg_color="#0e1520")
+        chat_shell.grid(row=1, column=0, sticky="nsew", padx=26, pady=14)
+        chat_shell.grid_rowconfigure(0, weight=1)
+        chat_shell.grid_columnconfigure(0, weight=1)
+        self.chat = tk.Text(
+            chat_shell,
+            bg="#0e1520",
+            fg="#d9e3ef",
+            insertbackground="#d9e3ef",
+            selectbackground="#24496b",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI", 11),
+            wrap="word",
+            padx=18,
+            pady=16,
+            spacing1=2,
+            spacing3=5,
+        )
+        self.chat.grid(row=0, column=0, sticky="nsew")
+        chat_scroll = ctk.CTkScrollbar(chat_shell, command=self.chat.yview)
+        chat_scroll.grid(row=0, column=1, sticky="ns", pady=12, padx=(0, 8))
+        self.chat.configure(yscrollcommand=chat_scroll.set)
+        self._configure_markdown_tags()
+        self._append("HYPER CODER\nYour local model studio is ready. Download the model or load a GGUF file, then start a conversation.\n\nTip: you can press Ctrl+Enter to send.\n")
+
         compose = ctk.CTkFrame(main, fg_color="#101722", corner_radius=16, border_width=1, border_color="#1d2a3a")
         compose.grid(row=2, column=0, sticky="ew", padx=26, pady=(0, 24)); compose.grid_columnconfigure(0, weight=1)
         self.entry = ctk.CTkTextbox(compose, height=70, fg_color="transparent", border_width=0, text_color="#edf4ff", font=ctk.CTkFont(size=14), wrap="word")
@@ -169,13 +196,116 @@ class HyperCoder(ctk.CTk):
         self.send_button = ctk.CTkButton(compose, text="Send  ↗", width=92, height=38, command=self.send_message)
         self.send_button.grid(row=0, column=1, padx=12, pady=12, sticky="s")
 
+    def _configure_markdown_tags(self):
+        self.chat.tag_configure("h1", font=("Segoe UI", 20, "bold"), foreground="#f4f8ff", spacing1=10, spacing3=6)
+        self.chat.tag_configure("h2", font=("Segoe UI", 16, "bold"), foreground="#eaf3ff", spacing1=9, spacing3=5)
+        self.chat.tag_configure("h3", font=("Segoe UI", 13, "bold"), foreground="#dfeeff", spacing1=8, spacing3=4)
+        self.chat.tag_configure("bold", font=("Segoe UI", 11, "bold"))
+        self.chat.tag_configure("italic", font=("Segoe UI", 11, "italic"))
+        self.chat.tag_configure("code", font=("Consolas", 10), foreground="#b9e2ff", background="#151f2c")
+        self.chat.tag_configure("codeblock", font=("Consolas", 10), foreground="#d3e8f7", background="#151f2c", lmargin1=14, lmargin2=14, rmargin=14, spacing1=5, spacing3=7)
+        self.chat.tag_configure("quote", foreground="#aebed2", lmargin1=18, lmargin2=18)
+        self.chat.tag_configure("bullet", lmargin1=16, lmargin2=32)
+        self.chat.tag_configure("link", foreground="#56c8ff", underline=True)
+        self.chat.tag_configure("role_user", font=("Segoe UI", 10, "bold"), foreground="#86d8ff", spacing1=8, spacing3=4)
+        self.chat.tag_configure("role_ai", font=("Segoe UI", 10, "bold"), foreground="#8ce5b4", spacing1=8, spacing3=4)
+        self.chat.tag_configure("role_system", font=("Segoe UI", 10, "bold"), foreground="#ffca7a", spacing1=8, spacing3=4)
+        self.chat.tag_configure("rule", foreground="#3b4d63")
+
     def _option(self, parent, label, variable, values):
         row = ctk.CTkFrame(parent, fg_color="transparent"); row.pack(fill="x", padx=22, pady=5)
         ctk.CTkLabel(row, text=label, text_color="#b5c1d0", font=ctk.CTkFont(size=12)).pack(anchor="w")
         ctk.CTkOptionMenu(row, variable=variable, values=values, height=30).pack(fill="x", pady=(4, 0))
 
-    def _append(self, text):
-        self.chat.configure(state="normal"); self.chat.insert("end", text); self.chat.see("end"); self.chat.configure(state="disabled")
+    def _append(self, text, tag=None):
+        self.chat.configure(state="normal")
+        self.chat.insert("end", text, tag or ())
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
+
+    def _insert_inline_markdown(self, text):
+        token_pattern = re.compile(r"(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\(https?://[^)\s]+\))")
+        position = 0
+        for match in token_pattern.finditer(text):
+            if match.start() > position:
+                self.chat.insert("end", text[position:match.start()])
+            token = match.group(0)
+            if token.startswith("`"):
+                self.chat.insert("end", token[1:-1], "code")
+            elif token.startswith("**") or token.startswith("__"):
+                self.chat.insert("end", token[2:-2], "bold")
+            elif token.startswith("*") or token.startswith("_"):
+                self.chat.insert("end", token[1:-1], "italic")
+            elif token.startswith("["):
+                link_match = re.match(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", token)
+                if link_match:
+                    label, url = link_match.groups()
+                    self._link_counter += 1
+                    link_tag = f"link_{self._link_counter}"
+                    self.chat.insert("end", label, ("link", link_tag))
+                    self.chat.tag_bind(link_tag, "<Button-1>", lambda _event, target=url: webbrowser.open(target))
+                    self.chat.tag_bind(link_tag, "<Enter>", lambda _event: self.chat.configure(cursor="hand2"))
+                    self.chat.tag_bind(link_tag, "<Leave>", lambda _event: self.chat.configure(cursor="xterm"))
+            position = match.end()
+        if position < len(text):
+            self.chat.insert("end", text[position:])
+
+    def _append_markdown(self, markdown_text):
+        self.chat.configure(state="normal")
+        in_code_block = False
+        for raw_line in markdown_text.splitlines():
+            line = raw_line.rstrip()
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                self.chat.insert("end", line + "\n", "codeblock")
+                continue
+
+            heading = re.match(r"^(#{1,3})\s+(.+)$", line)
+            if heading:
+                self._insert_inline_markdown(heading.group(2))
+                start = self.chat.index("end-1c linestart")
+                self.chat.insert("end", "\n")
+                self.chat.tag_add(f"h{len(heading.group(1))}", start, "end-1c")
+                continue
+
+            if re.match(r"^\s*([-*_])(?:\s*\1){2,}\s*$", line):
+                self.chat.insert("end", "────────────────────────────────────────\n", "rule")
+                continue
+
+            quote = re.match(r"^\s*>\s?(.*)$", line)
+            if quote:
+                start = self.chat.index("end")
+                self.chat.insert("end", "▌ ")
+                self._insert_inline_markdown(quote.group(1))
+                self.chat.insert("end", "\n")
+                self.chat.tag_add("quote", start, "end-1c")
+                continue
+
+            bullet = re.match(r"^\s*[-*+]\s+(.+)$", line)
+            numbered = re.match(r"^\s*(\d+)\.\s+(.+)$", line)
+            if bullet:
+                start = self.chat.index("end")
+                self.chat.insert("end", "• ")
+                self._insert_inline_markdown(bullet.group(1))
+                self.chat.insert("end", "\n")
+                self.chat.tag_add("bullet", start, "end-1c")
+                continue
+            if numbered:
+                start = self.chat.index("end")
+                self.chat.insert("end", f"{numbered.group(1)}. ")
+                self._insert_inline_markdown(numbered.group(2))
+                self.chat.insert("end", "\n")
+                self.chat.tag_add("bullet", start, "end-1c")
+                continue
+
+            self._insert_inline_markdown(line)
+            self.chat.insert("end", "\n")
+
+        self.chat.insert("end", "\n")
+        self.chat.see("end")
+        self.chat.configure(state="disabled")
 
     def _run_bg(self, fn):
         threading.Thread(target=fn, daemon=True).start()
@@ -237,7 +367,8 @@ class HyperCoder(ctk.CTk):
     def _model_loaded(self, model, path):
         self.model = model; self.busy = False; self.load_button.configure(state="normal")
         self.model_status.configure(text="●  Gemma loaded", text_color="#65dda5"); self.status.configure(text=f"Ready · {path.name}")
-        self._append("\nSYSTEM  Model loaded and ready.\n\n")
+        self._append("\nSYSTEM  ", "role_system")
+        self._append("Model loaded and ready.\n\n")
 
     def _load_error(self, error):
         self.busy = False; self.load_button.configure(state="normal"); self.status.configure(text="Could not load model")
@@ -252,7 +383,10 @@ class HyperCoder(ctk.CTk):
         if not prompt: return
         if self.model is None:
             messagebox.showinfo("Load a model", "Download or load a GGUF model before chatting."); return
-        self.entry.delete("1.0", "end"); self._append(f"\nYOU\n{prompt}\n\nHYPER\n")
+        self.entry.delete("1.0", "end")
+        self._append("\nYOU\n", "role_user")
+        self._append(prompt + "\n\n")
+        self._append("HYPER\n", "role_ai")
         self.messages.append({"role": "user", "content": prompt})
         self.busy = True; self.send_button.configure(state="disabled"); self.status.configure(text="Generating…")
         def work():
@@ -266,7 +400,10 @@ class HyperCoder(ctk.CTk):
         self._run_bg(work)
 
     def _reply_done(self, text):
-        self._append(text + "\n"); self.busy = False; self.send_button.configure(state="normal"); self.status.configure(text="Ready")
+        self._append_markdown(text)
+        self.busy = False
+        self.send_button.configure(state="normal")
+        self.status.configure(text="Ready")
 
     def _reply_error(self, error):
         self.busy = False; self.send_button.configure(state="normal"); self.status.configure(text="Generation failed")
